@@ -10,7 +10,6 @@ Strategy:
 """
 
 import os
-import sys
 import time
 import json
 from pathlib import Path
@@ -29,7 +28,6 @@ from torchvision import datasets, transforms, models
 from sklearn.metrics import (
     balanced_accuracy_score, classification_report, confusion_matrix, f1_score
 )
-balanced_accuracy_score_fn = balanced_accuracy_score  # alias for training loop
 
 # --- Config ---
 PROJECT = Path(__file__).resolve().parent.parent
@@ -217,7 +215,7 @@ for epoch in range(1, PHASE2_EPOCHS + 1):
     t0 = time.time()
     train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer)
     test_loss, test_acc, y_pred, y_true = evaluate(model, test_loader, criterion)
-    bal_acc_epoch = balanced_accuracy_score_fn(y_true, y_pred)
+    bal_acc_epoch = balanced_accuracy_score(y_true, y_pred)
     scheduler.step()
     elapsed = time.time() - t0
     cur_lr = scheduler.get_last_lr()[0]

@@ -80,30 +80,38 @@ test_transform = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
-# --- Dataset (filtered to 18 classes) ---
-full_train = datasets.ImageFolder(str(DATA_DIR / "train"), transform=test_transform)
-full_test = datasets.ImageFolder(str(TEST_DIR), transform=test_transform)
-
-keep_idxs = {i for i, c in enumerate(full_train.classes) if c not in DROP_CLASSES}
-classes = [c for i, c in enumerate(full_train.classes) if i in keep_idxs]
+# --- Class list (from directory structure, matching ImageFolder alphabetical order) ---
+TRAIN_DIR = DATA_DIR / "train"
+all_classes = sorted(d.name for d in TRAIN_DIR.iterdir() if d.is_dir())
+keep_idxs = {i for i, c in enumerate(all_classes) if c not in DROP_CLASSES}
+classes = [c for i, c in enumerate(all_classes) if i in keep_idxs]
 old_to_new = {old: new for new, old in enumerate(sorted(keep_idxs))}
 num_classes = len(classes)
 
-test_indices = [i for i, (_, lbl) in enumerate(full_test.samples) if lbl in keep_idxs]
-test_dataset = Subset(full_test, test_indices)
-
 print(f"Classes: {num_classes}")
-print(f"Test images: {len(test_dataset)}")
 
-test_loader = DataLoader(
-    test_dataset, batch_size=BATCH_SIZE, shuffle=False,
-    num_workers=NUM_WORKERS, pin_memory=True
-)
+# --- Test dataset (only needed for inference fallback) ---
+test_loader = None
+label_remap = None
 
-label_remap = torch.tensor(
-    [old_to_new.get(i, -1) for i in range(len(full_train.classes))],
-    dtype=torch.long, device=DEVICE
-)
+def get_test_loader():
+    """Lazily build the test loader (only needed when .npz predictions are missing)."""
+    global test_loader, label_remap
+    if test_loader is not None:
+        return test_loader
+    full_test = datasets.ImageFolder(str(TEST_DIR), transform=test_transform)
+    test_indices = [i for i, (_, lbl) in enumerate(full_test.samples) if lbl in keep_idxs]
+    test_dataset = Subset(full_test, test_indices)
+    print(f"Test images: {len(test_dataset)}")
+    test_loader = DataLoader(
+        test_dataset, batch_size=BATCH_SIZE, shuffle=False,
+        num_workers=NUM_WORKERS, pin_memory=True
+    )
+    label_remap = torch.tensor(
+        [old_to_new.get(i, -1) for i in range(len(all_classes))],
+        dtype=torch.long, device=DEVICE
+    )
+    return test_loader
 
 # --- Model builder ---
 def build_model(arch, num_classes):
@@ -345,7 +353,7 @@ for arch in ["resnet18", "efficientnet_b0"]:
         model.load_state_dict(torch.load(ckpt, map_location=DEVICE, weights_only=True))
         model = model.to(DEVICE)
 
-        y_pred, y_true = evaluate(model, test_loader)
+        y_pred, y_true = evaluate(model, get_test_loader())
 
         # Save predictions for future runs without GPU
         np.savez(pred_path, y_pred=y_pred, y_true=y_true)

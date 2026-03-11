@@ -2,14 +2,11 @@
 """Baseline classifiers for Skin Disease Classification.
 
 Strategy:
-  1. Resize all images to 64x64, flatten to feature vectors (64*64*3 = 12288)
+  1. Resize all images to 32x32, flatten to feature vectors (32*32*3 = 3072)
   2. Train/evaluate: Logistic Regression, Random Forest, SVM, KNN
-  3. Also try HOG features + Logistic Regression as a hand-crafted baseline
-  4. Report accuracy, balanced accuracy, per-class F1, confusion matrix
+  3. Report accuracy, balanced accuracy, per-class F1, confusion matrix
 """
 
-import os
-import sys
 import time
 import warnings
 from pathlib import Path
@@ -199,4 +196,4 @@ plt.savefig(OUT_DIR / "model_comparison.png", dpi=150, bbox_inches="tight")
 plt.close()
 
 print(f"\nAll outputs saved to: {OUT_DIR}")
-print(f"Random baseline (22 classes): {1/22:.4f}")
+print(f"Random baseline (18 classes): {1/18:.4f}")

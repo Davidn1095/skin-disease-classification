@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Exploratory Data Analysis for Skin Disease Classification Dataset."""
 
-import os
-import sys
 from pathlib import Path
 
 import numpy as np
