@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Baseline classifiers for Skin Disease Classification.
+"""Random Forest baseline for Skin Disease Classification.
 
 Strategy:
   1. Resize all images to 32x32, flatten to feature vectors (32*32*3 = 3072)
-  2. Train/evaluate: Logistic Regression, Random Forest, SVM, KNN
-  3. Report accuracy, balanced accuracy, per-class F1, confusion matrix
+  2. StandardScaler + PCA (95% variance)
+  3. Train Random Forest (200 trees, class_weight="balanced")
+  4. Report accuracy, balanced accuracy, per-class F1, confusion matrix
 """
 
 import time
@@ -19,10 +20,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from PIL import Image
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import LinearSVC
-from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, classification_report,
     confusion_matrix, f1_score
@@ -75,14 +73,12 @@ le.fit(classes)
 y_train_enc = le.transform(y_train)
 y_test_enc = le.transform(y_test)
 
-# --- Feature variants ---
-# 1. Raw pixels (scaled)
+# --- Features: StandardScaler + PCA ---
 print("\nScaling features...")
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# 2. PCA reduction (keep 95% variance)
 print("Running PCA...")
 t0 = time.time()
 pca = PCA(n_components=0.95, random_state=42)
@@ -90,109 +86,57 @@ X_train_pca = pca.fit_transform(X_train_scaled)
 X_test_pca = pca.transform(X_test_scaled)
 print(f"  PCA: {X_train_scaled.shape[1]} -> {X_train_pca.shape[1]} components ({time.time()-t0:.1f}s)")
 
-# --- Models ---
-models = {
-    "LogReg_PCA": (
-        LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42, n_jobs=-1),
-        X_train_pca, X_test_pca, "PCA features"
-    ),
-    "LogReg_raw": (
-        LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42, n_jobs=-1),
-        X_train_scaled, X_test_scaled, "Raw pixels (scaled)"
-    ),
-    "RF": (
-        RandomForestClassifier(n_estimators=200, class_weight="balanced", random_state=42, n_jobs=-1),
-        X_train_pca, X_test_pca, "PCA features"
-    ),
-    "LinearSVC": (
-        LinearSVC(max_iter=2000, class_weight="balanced", random_state=42, dual="auto"),
-        X_train_pca, X_test_pca, "PCA features"
-    ),
-    "KNN": (
-        KNeighborsClassifier(n_neighbors=5, n_jobs=-1),
-        X_train_pca, X_test_pca, "PCA features"
-    ),
-}
+# --- Train RF ---
+print(f"\n{'='*60}")
+print("Training: Random Forest (200 trees, PCA features)")
+print(f"{'='*60}")
+model = RandomForestClassifier(n_estimators=200, class_weight="balanced", random_state=42, n_jobs=-1)
 
-# --- Train and evaluate ---
-results = []
+t0 = time.time()
+model.fit(X_train_pca, y_train_enc)
+train_time = time.time() - t0
 
-for name, (model, X_tr, X_te, feat_desc) in models.items():
-    print(f"\n{'='*60}")
-    print(f"Training: {name} ({feat_desc})")
-    print(f"{'='*60}")
-    t0 = time.time()
-    model.fit(X_tr, y_train_enc)
-    train_time = time.time() - t0
+t0 = time.time()
+y_pred = model.predict(X_test_pca)
+pred_time = time.time() - t0
 
-    t0 = time.time()
-    y_pred = model.predict(X_te)
-    pred_time = time.time() - t0
+acc = accuracy_score(y_test_enc, y_pred)
+bal_acc = balanced_accuracy_score(y_test_enc, y_pred)
+f1_macro = f1_score(y_test_enc, y_pred, average="macro")
+f1_weighted = f1_score(y_test_enc, y_pred, average="weighted")
 
-    acc = accuracy_score(y_test_enc, y_pred)
-    bal_acc = balanced_accuracy_score(y_test_enc, y_pred)
-    f1_macro = f1_score(y_test_enc, y_pred, average="macro")
-    f1_weighted = f1_score(y_test_enc, y_pred, average="weighted")
+print(f"  Accuracy:          {acc:.4f}")
+print(f"  Balanced Accuracy: {bal_acc:.4f}")
+print(f"  F1 (macro):        {f1_macro:.4f}")
+print(f"  F1 (weighted):     {f1_weighted:.4f}")
+print(f"  Train time:        {train_time:.1f}s")
+print(f"  Predict time:      {pred_time:.1f}s")
 
-    print(f"  Accuracy:          {acc:.4f}")
-    print(f"  Balanced Accuracy: {bal_acc:.4f}")
-    print(f"  F1 (macro):        {f1_macro:.4f}")
-    print(f"  F1 (weighted):     {f1_weighted:.4f}")
-    print(f"  Train time:        {train_time:.1f}s")
-    print(f"  Predict time:      {pred_time:.1f}s")
+# Per-class report
+report = classification_report(y_test_enc, y_pred, target_names=classes, output_dict=True)
+df_report = pd.DataFrame(report).T
+df_report.to_csv(OUT_DIR / "report_RF.csv")
 
-    results.append({
-        "model": name, "features": feat_desc,
-        "accuracy": round(acc, 4), "balanced_accuracy": round(bal_acc, 4),
-        "f1_macro": round(f1_macro, 4), "f1_weighted": round(f1_weighted, 4),
-        "train_time_s": round(train_time, 1), "predict_time_s": round(pred_time, 1),
-    })
-
-    # Per-class report
-    report = classification_report(y_test_enc, y_pred, target_names=classes, output_dict=True)
-    df_report = pd.DataFrame(report).T
-    df_report.to_csv(OUT_DIR / f"report_{name}.csv")
-
-    # Confusion matrix
-    cm = confusion_matrix(y_test_enc, y_pred)
-    fig, ax = plt.subplots(figsize=(14, 12))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=classes, yticklabels=classes, ax=ax)
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("True")
-    ax.set_title(f"Confusion Matrix — {name} (Acc={acc:.3f}, BalAcc={bal_acc:.3f})")
-    plt.xticks(rotation=45, ha="right")
-    plt.yticks(rotation=0)
-    plt.tight_layout()
-    plt.savefig(OUT_DIR / f"confusion_{name}.png", dpi=120, bbox_inches="tight")
-    plt.close()
-
-# --- Summary ---
-print("\n" + "=" * 60)
-print("SUMMARY")
-print("=" * 60)
-df_results = pd.DataFrame(results).sort_values("balanced_accuracy", ascending=False)
-print(df_results.to_string(index=False))
+# Summary CSV
+df_results = pd.DataFrame([{
+    "model": "RF", "features": "PCA",
+    "accuracy": round(acc, 4), "balanced_accuracy": round(bal_acc, 4),
+    "f1_macro": round(f1_macro, 4), "f1_weighted": round(f1_weighted, 4),
+    "train_time_s": round(train_time, 1), "predict_time_s": round(pred_time, 1),
+}])
 df_results.to_csv(OUT_DIR / "baseline_results.csv", index=False)
 
-# Bar plot comparison
-fig, ax = plt.subplots(figsize=(10, 5))
-x = np.arange(len(df_results))
-w = 0.25
-ax.bar(x - w, df_results["accuracy"], w, label="Accuracy", color="steelblue")
-ax.bar(x, df_results["balanced_accuracy"], w, label="Balanced Acc", color="coral")
-ax.bar(x + w, df_results["f1_macro"], w, label="F1 (macro)", color="seagreen")
-ax.set_xticks(x)
-ax.set_xticklabels(df_results["model"], rotation=30, ha="right")
-ax.set_ylabel("Score")
-ax.set_title("Baseline Model Comparison")
-ax.legend()
-ax.set_ylim(0, 1)
-for i, (a, b, f) in enumerate(zip(df_results["accuracy"], df_results["balanced_accuracy"], df_results["f1_macro"])):
-    ax.text(i - w, a + 0.01, f"{a:.2f}", ha="center", fontsize=7)
-    ax.text(i, b + 0.01, f"{b:.2f}", ha="center", fontsize=7)
-    ax.text(i + w, f + 0.01, f"{f:.2f}", ha="center", fontsize=7)
+# Confusion matrix
+cm = confusion_matrix(y_test_enc, y_pred)
+fig, ax = plt.subplots(figsize=(14, 12))
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=classes, yticklabels=classes, ax=ax)
+ax.set_xlabel("Predicted")
+ax.set_ylabel("True")
+ax.set_title(f"Confusion Matrix — RF (Acc={acc:.3f}, BalAcc={bal_acc:.3f})")
+plt.xticks(rotation=45, ha="right")
+plt.yticks(rotation=0)
 plt.tight_layout()
-plt.savefig(OUT_DIR / "model_comparison.png", dpi=150, bbox_inches="tight")
+plt.savefig(OUT_DIR / "confusion_RF.png", dpi=120, bbox_inches="tight")
 plt.close()
 
 print(f"\nAll outputs saved to: {OUT_DIR}")

@@ -9,7 +9,7 @@ Group 3 — University of Graz, Summer Semester 2026
 | Script | Description |
 |--------|-------------|
 | 01_eda.py | Exploratory data analysis |
-| 02_baseline.py | Traditional ML baselines (LogReg, RF, SVM, KNN) |
+| 02_baseline.py | Random Forest baseline |
 | 03_transfer_learning.py | ResNet18 / EfficientNet-B0 fine-tuning (GPU) |
 | 04_comparison.py | Model comparison table |
 | 05_generate_figures.py | Figure generation from saved predictions |
