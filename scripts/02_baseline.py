@@ -78,11 +78,6 @@ le.fit(classes)
 y_train_enc = le.transform(y_train)
 y_test_enc = le.transform(y_test)
 
-# --- Compute class weights ---
-from sklearn.utils.class_weight import compute_class_weight
-cw = compute_class_weight("balanced", classes=np.arange(len(classes)), y=y_train_enc)
-class_weight_dict = dict(zip(range(len(classes)), cw))
-
 # --- Feature variants ---
 # 1. Raw pixels (scaled)
 print("\nScaling features...")
@@ -99,9 +94,6 @@ X_test_pca = pca.transform(X_test_scaled)
 print(f"  PCA: {X_train_scaled.shape[1]} -> {X_train_pca.shape[1]} components ({time.time()-t0:.1f}s)")
 
 # --- Models ---
-# Free unscaled data
-del X_train, X_test
-
 models = {
     "LogReg_PCA": (
         LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42, n_jobs=-1),

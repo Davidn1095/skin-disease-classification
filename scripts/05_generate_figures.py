@@ -7,7 +7,7 @@ test set, and produces:
   - confusion_efficientnet_b0.pdf
   - training_curves_resnet18.pdf   (only if history JSON exists)
   - training_curves_efficientnet_b0.pdf (only if history JSON exists)
-  - comparison_f1_bar.pdf
+  - comparison_bal_acc_bar.pdf
 
 Also computes 95% bootstrap CIs (1000 resamples) for accuracy,
 balanced accuracy, and macro F1.
@@ -28,9 +28,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms, models
-from sklearn.metrics import (
-    balanced_accuracy_score, classification_report, confusion_matrix, f1_score
-)
+from sklearn.metrics import balanced_accuracy_score, confusion_matrix, f1_score
 
 # --- Style (FIGURE_STYLE.md) ---
 def set_style():
@@ -397,9 +395,6 @@ for metric, key, ci_key in [
     ("Balanced Accuracy", "bal_acc", "balanced_accuracy"),
     ("F1 (macro)", "f1_m", "f1_macro"),
 ]:
-    for arch_label, arch_key in [("resnet18", "resnet18"), ("efficientnet_b0", "efficientnet_b0")]:
-        if arch_key not in results:
-            continue
     r = results.get("resnet18", {})
     e = results.get("efficientnet_b0", {})
     if r and e:

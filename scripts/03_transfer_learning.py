@@ -26,6 +26,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms, models
+from sklearn.metrics import (
+    balanced_accuracy_score, classification_report, confusion_matrix, f1_score
+)
+balanced_accuracy_score_fn = balanced_accuracy_score  # alias for training loop
 
 # --- Config ---
 PROJECT = Path(__file__).resolve().parent.parent
@@ -91,7 +95,7 @@ print(f"  Train: {len(train_dataset)}, Test: {len(test_dataset)}")
 
 # --- Class weights for loss (inverse frequency on kept classes) ---
 all_train_labels = [full_train.targets[i] for i in train_indices]
-new_train_labels = np.array([old_to_new[l] for l in all_train_labels])
+new_train_labels = [old_to_new[l] for l in all_train_labels]
 class_counts = np.bincount(new_train_labels, minlength=num_classes)
 class_weights = 1.0 / class_counts
 
@@ -208,14 +212,12 @@ optimizer = optim.Adam([
 ], weight_decay=WEIGHT_DECAY)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=PHASE2_EPOCHS)
 
-from sklearn.metrics import balanced_accuracy_score as _bal_acc_fn
-
 best_bal_acc = 0.0
 for epoch in range(1, PHASE2_EPOCHS + 1):
     t0 = time.time()
     train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer)
     test_loss, test_acc, y_pred, y_true = evaluate(model, test_loader, criterion)
-    bal_acc_epoch = _bal_acc_fn(y_true, y_pred)
+    bal_acc_epoch = balanced_accuracy_score_fn(y_true, y_pred)
     scheduler.step()
     elapsed = time.time() - t0
     cur_lr = scheduler.get_last_lr()[0]
@@ -244,10 +246,6 @@ print("FINAL EVALUATION (best checkpoint)")
 print(f"{'='*60}")
 model.load_state_dict(torch.load(OUT_DIR / f"best_{ARCH}.pt", weights_only=True))
 test_loss, test_acc, y_pred, y_true = evaluate(model, test_loader, criterion)
-
-from sklearn.metrics import (
-    balanced_accuracy_score, classification_report, confusion_matrix, f1_score
-)
 
 bal_acc = balanced_accuracy_score(y_true, y_pred)
 f1_macro = f1_score(y_true, y_pred, average="macro")
