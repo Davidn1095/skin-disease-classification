@@ -10,6 +10,7 @@ Strategy:
 """
 
 import os
+import random
 import time
 import json
 from pathlib import Path
@@ -28,6 +29,13 @@ from torchvision import datasets, transforms, models
 from sklearn.metrics import (
     balanced_accuracy_score, classification_report, confusion_matrix, f1_score
 )
+
+# --- Reproducibility: same seed as 03_augmentation.py "standard" run ---
+SEED = 43
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
 # --- Config ---
 PROJECT = Path(__file__).resolve().parent.parent

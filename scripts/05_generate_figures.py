@@ -24,25 +24,35 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
-from torchvision import datasets, transforms, models
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix, f1_score
+
+# Torch is only needed when cached predictions are missing. Import lazily so
+# the plot-only path works on machines without pytorch installed.
+try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, Subset
+    from torchvision import datasets, transforms, models
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
 
 # --- Style (FIGURE_STYLE.md) ---
 def set_style():
     plt.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
-        "font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8,
+        "font.size": 7,
+        "axes.titlesize": 7, "axes.titleweight": "bold", "axes.titlelocation": "center",
+        "axes.labelsize": 7,
         "axes.spines.top": False, "axes.spines.right": False,
         "axes.grid": True, "axes.grid.which": "major",
         "grid.color": "#E5E5E5", "grid.linewidth": 0.3,
-        "xtick.labelsize": 7, "ytick.labelsize": 7,
+        "xtick.labelsize": 6, "ytick.labelsize": 6,
         "xtick.major.size": 3, "ytick.major.size": 3,
         "xtick.minor.size": 0, "ytick.minor.size": 0,
-        "legend.fontsize": 7, "legend.framealpha": 0.8, "legend.edgecolor": "none",
+        "legend.fontsize": 6, "legend.framealpha": 0.8, "legend.edgecolor": "none",
         "figure.facecolor": "white", "figure.dpi": 150,
         "savefig.bbox": "tight", "savefig.facecolor": "white", "savefig.pad_inches": 0.05,
     })
@@ -64,7 +74,7 @@ OUT_DIR = PROJECT / "output" / "transfer_learning"
 IMG_SIZE = 224
 BATCH_SIZE = 64
 NUM_WORKERS = 4
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cuda" if (TORCH_AVAILABLE and torch.cuda.is_available()) else "cpu") if TORCH_AVAILABLE else None
 DROP_CLASSES = {"Unknown_Normal", "Lupus", "Sun_Sunlight_Damage", "Moles"}
 PHASE1_EPOCHS = 5
 N_BOOTSTRAP = 1000
@@ -72,13 +82,14 @@ RNG_SEED = 42
 
 print(f"Device: {DEVICE}")
 
-# --- Test transform (same as training script) ---
-test_transform = transforms.Compose([
-    transforms.Resize(int(IMG_SIZE * 1.14)),  # 256
-    transforms.CenterCrop(IMG_SIZE),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-])
+# --- Test transform (built lazily so the script imports without torchvision) ---
+def _make_test_transform():
+    return transforms.Compose([
+        transforms.Resize(int(IMG_SIZE * 1.14)),  # 256
+        transforms.CenterCrop(IMG_SIZE),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
 
 # --- Class list (from directory structure, matching ImageFolder alphabetical order) ---
 TRAIN_DIR = DATA_DIR / "train"
@@ -99,7 +110,9 @@ def get_test_loader():
     global test_loader, label_remap
     if test_loader is not None:
         return test_loader
-    full_test = datasets.ImageFolder(str(TEST_DIR), transform=test_transform)
+    if not TORCH_AVAILABLE:
+        raise RuntimeError("torch/torchvision not installed; cached predictions are required for plot-only mode")
+    full_test = datasets.ImageFolder(str(TEST_DIR), transform=_make_test_transform())
     test_indices = [i for i, (_, lbl) in enumerate(full_test.samples) if lbl in keep_idxs]
     test_dataset = Subset(full_test, test_indices)
     print(f"Test images: {len(test_dataset)}")
@@ -128,17 +141,19 @@ def build_model(arch, num_classes):
     return model
 
 # --- Evaluate ---
-@torch.no_grad()
 def evaluate(model, loader):
+    if not TORCH_AVAILABLE:
+        raise RuntimeError("torch not available")
     model.eval()
     all_preds, all_labels = [], []
-    for images, labels in loader:
-        images = images.to(DEVICE)
-        labels = label_remap[labels.to(DEVICE)]
-        outputs = model(images)
-        _, preds = outputs.max(1)
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
+    with torch.no_grad():
+        for images, labels in loader:
+            images = images.to(DEVICE)
+            labels = label_remap[labels.to(DEVICE)]
+            outputs = model(images)
+            _, preds = outputs.max(1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
     return np.array(all_preds), np.array(all_labels)
 
 # --- Bootstrap CIs ---
@@ -172,9 +187,10 @@ def plot_confusion_matrix(y_true, y_pred, arch, acc, bal_acc):
     ax.set_yticks(np.arange(n_cls))
     ax.set_xticklabels(classes, rotation=45, ha="right", fontsize=6)
     ax.set_yticklabels(classes, rotation=0, fontsize=6)
+    ax.tick_params(length=0)
     for edge in range(n_cls + 1):
-        ax.axhline(edge - 0.5, color="white", linewidth=0.3)
-        ax.axvline(edge - 0.5, color="white", linewidth=0.3)
+        ax.axhline(edge - 0.5, color="white", linewidth=1.5)
+        ax.axvline(edge - 0.5, color="white", linewidth=1.5)
     thresh = cm.max() / 2.0
     for i in range(n_cls):
         for j in range(n_cls):
@@ -185,6 +201,49 @@ def plot_confusion_matrix(y_true, y_pred, arch, acc, bal_acc):
     ax.set_title(f"Confusion Matrix — {arch} (Acc={acc:.3f}, BalAcc={bal_acc:.3f})")
     ax.grid(False)
     out_path = OUT_DIR / f"confusion_{arch}.pdf"
+    fig.savefig(out_path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+# --- Plot combined confusion matrices (two panels, shared colorbar) ---
+def plot_confusion_combined(preds_by_arch):
+    """Side-by-side confusion matrices for two architectures sharing one colorbar."""
+    archs = ["resnet18", "efficientnet_b0"]
+    titles = {"resnet18": "ResNet18", "efficientnet_b0": "EfficientNet-B0"}
+    cms = {a: confusion_matrix(*preds_by_arch[a]) for a in archs}
+    n_cls = len(classes)
+    vmax = max(cm.max() for cm in cms.values())
+
+    fig, axes = plt.subplots(1, 2, figsize=(170 * mm2in, 95 * mm2in),
+                             constrained_layout=True)
+    im = None
+    for i_panel, (ax, arch) in enumerate(zip(axes, archs)):
+        cm = cms[arch]
+        im = ax.imshow(cm, interpolation="nearest", cmap="Blues",
+                       aspect="equal", vmin=0, vmax=vmax)
+        ax.set_xticks(np.arange(n_cls))
+        ax.set_xticklabels(classes, rotation=45, ha="right", fontsize=5)
+        if i_panel == 0:
+            ax.set_yticks(np.arange(n_cls))
+            ax.set_yticklabels(classes, rotation=0, fontsize=5)
+            ax.set_ylabel("True")
+        else:
+            ax.set_yticks([])
+        ax.tick_params(length=0)
+        for edge in range(n_cls + 1):
+            ax.axhline(edge - 0.5, color="white", linewidth=1.5)
+            ax.axvline(edge - 0.5, color="white", linewidth=1.5)
+        thresh = vmax / 2.0
+        for i in range(n_cls):
+            for j in range(n_cls):
+                ax.text(j, i, str(cm[i, j]), ha="center", va="center",
+                        color="white" if cm[i, j] > thresh else "black", fontsize=5)
+        ax.set_xlabel("Predicted")
+        ax.set_title(titles[arch])
+        ax.grid(False)
+    cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.6, aspect=30, pad=0.02)
+    cbar.ax.tick_params(labelsize=5, length=2, width=0.4)
+    out_path = OUT_DIR / "confusion_matrices_combined.pdf"
     fig.savefig(out_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -300,23 +359,34 @@ def plot_comparison_bal_acc(per_class_ba):
         "effnet_ba": [per_class_ba["efficientnet_b0"][c] for c in classes],
     }).sort_values("resnet18_ba", ascending=False)
 
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _chicklet import apply_atlas_theme, atlas_bars
+    apply_atlas_theme()
+
     fig, ax = plt.subplots(figsize=(155 * mm2in, 70 * mm2in))
     x = np.arange(len(comp))
-    w = 0.25
+    w = 0.28                         # dodged bar width, matches atlas Fig 2a
     cls_sorted = comp["class"].tolist()
 
-    ax.bar(x - w, comp["rf_ba"], w, label="RF Baseline",
-           color=RF_COLOUR, edgecolor="black", linewidth=0.5)
-    ax.bar(x, comp["resnet18_ba"], w, label="ResNet18",
-           color=RESNET_COLOUR, edgecolor="black", linewidth=0.5)
-    ax.bar(x + w, comp["effnet_ba"], w, label="EfficientNet-B0",
-           color=EFFNET_COLOUR, edgecolor="black", linewidth=0.5)
+    # Fig 2a uses size=0.15 for dodged narrow bars
+    atlas_bars(ax, x - w, comp["rf_ba"], width=w,
+               facecolor=RF_COLOUR, linewidth=0.15, label="RF Baseline")
+    atlas_bars(ax, x, comp["resnet18_ba"], width=w,
+               facecolor=RESNET_COLOUR, linewidth=0.15, label="ResNet18")
+    atlas_bars(ax, x + w, comp["effnet_ba"], width=w,
+               facecolor=EFFNET_COLOUR, linewidth=0.15, label="EfficientNet-B0")
     ax.set_xticks(x)
-    ax.set_xticklabels(cls_sorted, rotation=45, ha="right", fontsize=6)
+    ax.set_xticklabels(cls_sorted, rotation=45, ha="right")
     ax.set_ylabel("Balanced Accuracy")
-    ax.set_title("Per-class Balanced Accuracy: RF vs ResNet18 vs EfficientNet-B0")
-    ax.legend(fontsize=7, loc="upper right")
-    ax.xaxis.grid(False)
+    ax.set_title("Per-class Balanced Accuracy", pad=22)
+    # Legend: below the title, top-right, horizontal
+    ax.legend(loc="lower right", bbox_to_anchor=(1.0, 1.005), ncol=3,
+              frameon=False, handlelength=1.2, columnspacing=1.0)
+    ax.set_ylim(0, 1.05)
+    ax.margins(x=0.01)
+    ax.tick_params(axis="both", length=2, width=0.4)
+    ax.axhline(0, color="black", linewidth=0.5, zorder=4, clip_on=False)
 
     out_path = OUT_DIR / "comparison_bal_acc_bar.pdf"
     fig.savefig(out_path, bbox_inches="tight", facecolor="white")
@@ -328,6 +398,7 @@ def plot_comparison_bal_acc(per_class_ba):
 # =====================================================================
 results = {}           # arch -> {acc, bal_acc, f1_m, cis}
 per_class_ba = {}      # arch -> {class_name: ovr_balanced_accuracy}
+preds_by_arch = {}     # arch -> (y_true, y_pred) for combined confusion matrix
 
 for arch in ["resnet18", "efficientnet_b0"]:
     pred_path = OUT_DIR / f"preds_{arch}.npz"
@@ -382,11 +453,15 @@ for arch in ["resnet18", "efficientnet_b0"]:
     print(f"  F1 (macro):        {f1_m:.3f} ({cis['f1_macro'][0]:.3f}-{cis['f1_macro'][1]:.3f})")
     print(f"  F1 (weighted):     {f1_w:.3f}")
 
-    # Confusion matrix PDF
-    plot_confusion_matrix(y_true, y_pred, arch, acc, bal_acc)
+    # Stash predictions for the combined confusion matrix figure
+    preds_by_arch[arch] = (y_true, y_pred)
 
     # Training curves PDF (if history exists)
     plot_training_curves(arch)
+
+# --- Combined confusion matrices (single PDF, shared colorbar) ---
+if len(preds_by_arch) == 2:
+    plot_confusion_combined(preds_by_arch)
 
 # --- Per-class balanced accuracy comparison bar chart (needs both models) ---
 if len(per_class_ba) == 2:

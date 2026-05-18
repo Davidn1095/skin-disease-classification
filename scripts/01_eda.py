@@ -10,29 +10,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
-# --- Style (FIGURE_STYLE.md) ---
-def set_style():
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
-        "font.size": 8,
-        "axes.titlesize": 8, "axes.labelsize": 8,
-        "axes.spines.top": False, "axes.spines.right": False,
-        "axes.grid": True, "axes.grid.which": "major",
-        "grid.color": "#E5E5E5", "grid.linewidth": 0.3,
-        "xtick.labelsize": 7, "ytick.labelsize": 7,
-        "xtick.major.size": 3, "ytick.major.size": 3,
-        "xtick.minor.size": 0, "ytick.minor.size": 0,
-        "legend.fontsize": 7, "legend.framealpha": 0.8, "legend.edgecolor": "none",
-        "figure.facecolor": "white", "figure.dpi": 150,
-        "savefig.bbox": "tight", "savefig.facecolor": "white", "savefig.pad_inches": 0.05,
-    })
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _chicklet import apply_atlas_theme, atlas_bars, ATLAS_GREEN
 
-set_style()
+apply_atlas_theme()
 
-BAR_FILL = "#0072B2"  # Okabe-Ito blue
+BAR_FILL = ATLAS_GREEN        # Okabe-Ito green, matches atlas Fig 2b
 BAR_EDGE = "black"
-BAR_LW = 0.5
+BAR_LW = 0.3                  # atlas chicklet size=0.3
 DROP_CLASSES = {"Unknown_Normal", "Lupus", "Sun_Sunlight_Damage", "Moles"}
 
 # --- Paths ---
@@ -88,13 +74,17 @@ print(f"Imbalance ratio (18-class): {df_18['train'].max() / df_18['train'].min()
 mm2in = 1 / 25.4
 fig, ax = plt.subplots(figsize=(155 * mm2in, 70 * mm2in))
 
-ax.bar(range(len(df_18)), df_18["train"], color=BAR_FILL, edgecolor=BAR_EDGE, linewidth=BAR_LW)
+atlas_bars(ax, range(len(df_18)), df_18["train"],
+           facecolor=BAR_FILL, edgecolor=BAR_EDGE, linewidth=BAR_LW)
 for i, tr in enumerate(df_18["train"]):
     ax.text(i, tr + 15, f"{tr}", ha="center", fontsize=6)
 ax.set_xticks(range(len(df_18)))
-ax.set_xticklabels(df_18["class"], rotation=45, ha="right", fontsize=6)
+ax.set_xticklabels(df_18["class"], rotation=45, ha="right")
 ax.set_ylabel("Number of training images")
-ax.xaxis.grid(False)
+ax.set_ylim(0, df_18["train"].max() * 1.10)
+ax.margins(x=0.01)
+ax.tick_params(axis="both", length=2, width=0.4)
+ax.axhline(0, color="black", linewidth=0.5, zorder=4, clip_on=False)
 
 fig.savefig(OUT_DIR / "class_distribution.pdf", bbox_inches="tight", facecolor="white")
 plt.close(fig)
@@ -166,35 +156,38 @@ cls_stats = df_img.groupby("class").agg(
 ).round(1)
 print(cls_stats.to_string())
 
-# --- Fig 2: Sample images grid (18 classes only) ---
+# --- Fig 2: Sample images grid (18 classes, 6x3) ---
 print("\n" + "=" * 60)
 print("4. SAMPLE IMAGES PER CLASS (18 classes)")
 print("=" * 60)
 
 order_18 = df_18["class"].tolist()
-n_samples = 4
-fig, axes = plt.subplots(len(order_18), n_samples,
-                         figsize=(180 * mm2in, 280 * mm2in))
+n_cols, n_rows = 6, 3
+assert n_cols * n_rows == len(order_18), "Grid must hold all 18 classes"
 
-for i, cls in enumerate(order_18):
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(180 * mm2in, 110 * mm2in))
+
+for idx, cls in enumerate(order_18):
+    r, c = divmod(idx, n_cols)
+    ax = axes[r, c]
     cls_dir = TRAIN_DIR / cls
-    imgs = sorted(cls_dir.iterdir())[:n_samples]
-    for j in range(n_samples):
-        ax = axes[i, j]
-        if j < len(imgs):
-            try:
-                img = Image.open(imgs[j]).convert("RGB")
-                ax.imshow(img)
-                if j == 0:
-                    ax.set_ylabel(cls.replace("_", "\n"), fontsize=7,
-                                  rotation=0, labelpad=80, va="center")
-            except Exception:
-                ax.text(0.5, 0.5, "Error", ha="center", va="center",
-                        transform=ax.transAxes)
-        ax.set_xticks([])
-        ax.set_yticks([])
+    imgs = sorted(cls_dir.iterdir())
+    try:
+        img = Image.open(imgs[0]).convert("RGB")
+        # Centre-crop to square so all cells share the same aspect ratio
+        w, h = img.size
+        s = min(w, h)
+        left, top = (w - s) // 2, (h - s) // 2
+        img = img.crop((left, top, left + s, top + s))
+        ax.imshow(img)
+    except Exception as e:
+        ax.text(0.5, 0.5, "Error", ha="center", va="center", transform=ax.transAxes)
+        print(f"  WARNING: failed for {cls}: {e}")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel(cls.replace("_", " "), fontsize=7, labelpad=2)
 
-plt.suptitle("Sample images per class (first 4 from train)", fontsize=10, y=1.01)
+plt.suptitle("Sample images per class (first image from train)", fontsize=10, y=1.00)
 plt.tight_layout()
 fig.savefig(OUT_DIR / "sample_images.pdf", bbox_inches="tight", facecolor="white")
 plt.close(fig)
