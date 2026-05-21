@@ -85,7 +85,7 @@ print(f"Device: {DEVICE}")
 # --- Test transform (built lazily so the script imports without torchvision) ---
 def _make_test_transform():
     return transforms.Compose([
-        transforms.Resize(int(IMG_SIZE * 1.14)),  # 256
+        transforms.Resize(256),
         transforms.CenterCrop(IMG_SIZE),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),

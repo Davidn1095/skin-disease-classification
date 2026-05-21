@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Data augmentation experiment for skin disease classification.
+"""Augmentation ablation study for skin disease classification.
+
+A 2^3 = 8 configuration ablation. Horizontal and vertical flips are fixed
+ON in every configuration; the three remaining transformations are toggled
+independently:
+
+  crop      RandomResizedCrop(224, scale=(0.8, 1.0))   (replaces Resize+CenterCrop)
+  rotation  RandomRotation(15)
+  colour    ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)
 
 Two subcommands:
 
-  run       Train ResNet18 with one augmentation configuration
-            (GPU required; sbatch this).
-
-  compare   Read the three resulting JSONs and write the summary
-            CSV + comparison bar chart (CPU only; no torch needed).
-
-The "run" subcommand replaces the former 06_augmentation_experiment.py;
-the "compare" subcommand replaces the former 07_aug_comparison.py.
+  run       Train ResNet18 under one configuration  (GPU required; sbatch this).
+  compare   Read all eight JSONs and write the summary CSV + bar chart
+            (CPU only; no torch needed).
 """
 
 from __future__ import annotations
@@ -27,15 +30,22 @@ TRAIN_DIR = DATA_DIR / "train"
 TEST_DIR = DATA_DIR / "test"
 OUT_DIR = PROJECT / "output" / "transfer_learning"
 
-LEVELS = ["none", "standard", "strong"]           # JSON suffixes (intensity-ascending)
-DEFAULT_SEEDS = {"none": 42, "standard": 43, "strong": 44}
-DISPLAY_LABEL = {                                  # human-readable x-axis labels
-    "none": "No augmentation",
-    "standard": "Moderate augmentation",
-    "strong": "Intense augmentation",
-}
+# 2^3 ablation grid: flips always on; crop/rotation/colour toggled.
+CONFIGS = [
+    {"id": 1, "crop": False, "rotation": False, "colour": False},
+    {"id": 2, "crop": True,  "rotation": False, "colour": False},
+    {"id": 3, "crop": False, "rotation": True,  "colour": False},
+    {"id": 4, "crop": False, "rotation": False, "colour": True},
+    {"id": 5, "crop": True,  "rotation": True,  "colour": False},
+    {"id": 6, "crop": True,  "rotation": False, "colour": True},
+    {"id": 7, "crop": False, "rotation": True,  "colour": True},
+    {"id": 8, "crop": True,  "rotation": True,  "colour": True},
+]
+CONFIG_BY_ID = {c["id"]: c for c in CONFIGS}
+
 ARCH = "resnet18"
 IMG_SIZE = 224
+RESIZE_SHORT = 256          # shorter-side resize for the no-crop case and test set
 BATCH_SIZE = 64
 PHASE1_EPOCHS = 5
 PHASE2_EPOCHS = 15
@@ -45,11 +55,23 @@ WEIGHT_DECAY = 1e-4
 DROP_CLASSES = {"Unknown_Normal", "Lupus", "Sun_Sunlight_Damage", "Moles"}
 
 
+def config_code(cfg):
+    """Short label of which transformations are on, e.g. '-', 'C', 'C+R+J'."""
+    parts = []
+    if cfg["crop"]:
+        parts.append("C")
+    if cfg["rotation"]:
+        parts.append("R")
+    if cfg["colour"]:
+        parts.append("J")
+    return "+".join(parts) if parts else "—"   # em dash for "none"
+
+
 # =============================================================================
 # Subcommand: run
 # =============================================================================
 def cmd_run(args):
-    """Train ResNet18 under one augmentation configuration."""
+    """Train ResNet18 under one ablation configuration."""
     # Lazy imports so the compare path doesn't need torch
     import os
     import random
@@ -59,13 +81,13 @@ def cmd_run(args):
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    from sklearn.metrics import (
-        accuracy_score, balanced_accuracy_score, f1_score,
-    )
+    from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
     from torch.utils.data import DataLoader, Subset
     from torchvision import datasets, models, transforms
 
-    SEED = args.seed if args.seed is not None else DEFAULT_SEEDS[args.aug_level]
+    cfg = CONFIG_BY_ID[args.config_id]
+    # Distinct reproducible seed per config: cfg1 -> 42, ..., cfg8 -> 49
+    SEED = 42 + args.config_id - 1
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -75,7 +97,8 @@ def cmd_run(args):
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"Aug level: {args.aug_level}")
+    print(f"Config {cfg['id']}: crop={cfg['crop']} rotation={cfg['rotation']} "
+          f"colour={cfg['colour']}  ({config_code(cfg)})")
     print(f"Seed: {SEED}")
     print(f"Device: {DEVICE}")
     if torch.cuda.is_available():
@@ -83,40 +106,30 @@ def cmd_run(args):
 
     NORMALIZE = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
-    def build_train_transform(level):
-        if level == "none":
-            return transforms.Compose([
-                transforms.Resize(int(IMG_SIZE * 1.14)),
-                transforms.CenterCrop(IMG_SIZE),
-                transforms.ToTensor(),
-                NORMALIZE,
-            ])
-        if level == "standard":
-            return transforms.Compose([
-                transforms.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomVerticalFlip(),
-                transforms.RandomRotation(15),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-                transforms.ToTensor(),
-                NORMALIZE,
-            ])
-        if level == "strong":
-            return transforms.Compose([
-                transforms.RandomResizedCrop(IMG_SIZE, scale=(0.6, 1.0)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomVerticalFlip(),
-                transforms.RandomRotation(30),
-                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2),
-                transforms.ToTensor(),
-                NORMALIZE,
-                transforms.RandomErasing(p=0.3),
-            ])
-        raise ValueError(level)
+    def build_train_transform(cfg):
+        steps = []
+        # Geometric base: random resized crop when crop is on, else deterministic.
+        if cfg["crop"]:
+            steps.append(transforms.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0)))
+        else:
+            steps.append(transforms.Resize(RESIZE_SHORT))
+            steps.append(transforms.CenterCrop(IMG_SIZE))
+        # Flips are fixed on in every configuration.
+        steps.append(transforms.RandomHorizontalFlip(p=0.5))
+        steps.append(transforms.RandomVerticalFlip(p=0.5))
+        # Toggled transformations.
+        if cfg["rotation"]:
+            steps.append(transforms.RandomRotation(15))
+        if cfg["colour"]:
+            steps.append(transforms.ColorJitter(brightness=0.2, contrast=0.2,
+                                                saturation=0.2, hue=0.1))
+        steps.append(transforms.ToTensor())
+        steps.append(NORMALIZE)
+        return transforms.Compose(steps)
 
-    train_transform = build_train_transform(args.aug_level)
+    train_transform = build_train_transform(cfg)
     test_transform = transforms.Compose([
-        transforms.Resize(int(IMG_SIZE * 1.14)),
+        transforms.Resize(RESIZE_SHORT),
         transforms.CenterCrop(IMG_SIZE),
         transforms.ToTensor(),
         NORMALIZE,
@@ -267,7 +280,11 @@ def cmd_run(args):
     print(f"  Macro F1:          {f1_macro:.4f} ({f1_lo:.4f}-{f1_hi:.4f})")
 
     result = {
-        "aug_level": args.aug_level,
+        "config_id": cfg["id"],
+        "crop": cfg["crop"],
+        "rotation": cfg["rotation"],
+        "colour": cfg["colour"],
+        "config_code": config_code(cfg),
         "arch": ARCH,
         "seed": SEED,
         "n_test": int(n),
@@ -287,7 +304,7 @@ def cmd_run(args):
         "batch_size": BATCH_SIZE,
         "img_size": IMG_SIZE,
     }
-    out_path = OUT_DIR / f"aug_{args.aug_level}_{ARCH}.json"
+    out_path = OUT_DIR / f"aug_cfg{cfg['id']}_{ARCH}.json"
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
     print(f"\nSaved: {out_path}")
@@ -297,7 +314,7 @@ def cmd_run(args):
 # Subcommand: compare
 # =============================================================================
 def cmd_compare(args):
-    """Read the three JSONs and write the summary CSV + comparison bar chart."""
+    """Read all eight JSONs and write the summary CSV + comparison bar chart."""
     # Lazy imports (no torch needed here)
     import numpy as np
     import pandas as pd
@@ -309,13 +326,15 @@ def cmd_compare(args):
     from _chicklet import apply_atlas_theme, atlas_bars, ATLAS_GREEN
 
     rows = []
-    for lvl in LEVELS:
-        with open(OUT_DIR / f"aug_{lvl}_{ARCH}.json") as f:
+    for cfg in CONFIGS:
+        path = OUT_DIR / f"aug_cfg{cfg['id']}_{ARCH}.json"
+        with open(path) as f:
             rows.append(json.load(f))
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows).sort_values("config_id").reset_index(drop=True)
 
     cols = [
-        "aug_level", "seed", "accuracy", "accuracy_ci_low", "accuracy_ci_high",
+        "config_id", "crop", "rotation", "colour", "config_code",
+        "accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "balanced_accuracy", "balanced_accuracy_ci_low", "balanced_accuracy_ci_high",
         "f1_macro", "f1_macro_ci_low", "f1_macro_ci_high",
     ]
@@ -327,26 +346,26 @@ def cmd_compare(args):
     apply_atlas_theme()
     mm2in = 1 / 25.4
 
-    df_sorted = df.set_index("aug_level").loc[LEVELS].reset_index()
-    bal_acc = df_sorted["balanced_accuracy"].to_numpy()
-    lo_err = bal_acc - df_sorted["balanced_accuracy_ci_low"].to_numpy()
-    hi_err = df_sorted["balanced_accuracy_ci_high"].to_numpy() - bal_acc
+    bal_acc = df["balanced_accuracy"].to_numpy()
+    lo_err = bal_acc - df["balanced_accuracy_ci_low"].to_numpy()
+    hi_err = df["balanced_accuracy_ci_high"].to_numpy() - bal_acc
     yerr = np.vstack([lo_err, hi_err])
-    x = np.arange(len(df_sorted))
+    x = np.arange(len(df))
 
-    fig, ax = plt.subplots(figsize=(100 * mm2in, 70 * mm2in))
-    atlas_bars(ax, x, bal_acc, width=0.7, facecolor=ATLAS_GREEN, linewidth=0.3,
+    fig, ax = plt.subplots(figsize=(150 * mm2in, 75 * mm2in))
+    atlas_bars(ax, x, bal_acc, width=0.72, facecolor=ATLAS_GREEN, linewidth=0.3,
                yerr=yerr, capsize=3,
                error_kw={"elinewidth": 0.5, "ecolor": "black"})
-    for xi, val, hi in zip(x, bal_acc, df_sorted["balanced_accuracy_ci_high"]):
+    for xi, val, hi in zip(x, bal_acc, df["balanced_accuracy_ci_high"]):
         ax.text(xi, hi + 0.012, f"{val:.3f}", ha="center", va="bottom", fontsize=6)
     ax.set_xticks(x)
-    ax.set_xticklabels([DISPLAY_LABEL[lvl] for lvl in df_sorted["aug_level"]])
+    ax.set_xticklabels([f"{c}\ncfg{i}" for c, i in
+                        zip(df["config_code"], df["config_id"])])
     ax.set_ylabel("Balanced accuracy")
-    ax.set_xlabel("Augmentation level")
+    ax.set_xlabel("Augmentation configuration (C = crop, R = rotation, J = colour jitter)")
     ax.set_ylim(0, 1.0)
-    ax.set_title("ResNet18: augmentation strength vs balanced accuracy")
-    ax.margins(x=0.1)
+    ax.set_title("ResNet18 augmentation ablation")
+    ax.margins(x=0.04)
     ax.tick_params(axis="both", length=2, width=0.4)
     ax.axhline(0, color="black", linewidth=0.5, zorder=4, clip_on=False)
 
@@ -361,14 +380,13 @@ def cmd_compare(args):
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Augmentation experiment: train ResNet18 with different "
-                    "augmentation strengths, then compare results.")
+        description="Augmentation ablation: train ResNet18 over a 2^3 grid of "
+                    "crop/rotation/colour toggles, then compare results.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_run = sub.add_parser("run", help="Train one augmentation configuration")
-    p_run.add_argument("--aug_level", choices=LEVELS, required=True)
-    p_run.add_argument("--seed", type=int, default=None,
-                       help=f"Override seed. Defaults: {DEFAULT_SEEDS}.")
+    p_run = sub.add_parser("run", help="Train one ablation configuration")
+    p_run.add_argument("--config_id", type=int, choices=range(1, 9), required=True,
+                       metavar="{1..8}")
     p_run.add_argument("--bootstrap_n", type=int, default=1000)
     p_run.set_defaults(func=cmd_run)
 
