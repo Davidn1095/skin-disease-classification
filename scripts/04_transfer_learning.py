@@ -30,7 +30,7 @@ from sklearn.metrics import (
     balanced_accuracy_score, classification_report, confusion_matrix, f1_score
 )
 
-# --- Reproducibility: same seed as 03_augmentation.py "standard" run ---
+# --- Reproducibility seed for the rotation-only main training ---
 SEED = 43
 random.seed(SEED)
 np.random.seed(SEED)
